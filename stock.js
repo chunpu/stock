@@ -1,6 +1,7 @@
-var co = require('co')
+var async = require('async')
 var request = require('request')
 var cheerio = require('cheerio')
+var fs = require('fs')
 
 // stock list api
 // http://quote.eastmoney.com/stocklist.html
@@ -26,10 +27,10 @@ var cheerio = require('cheerio')
 
 var mode = process.argv[2]
 if ('test' == mode) {
-    getOnePage('http://money.finance.sina.com.cn/corp/go.php/vMS_MarketHistory/stockid/600000.phtml?year=2013&jidu=1')(console.log)
+    getOnePage('http://money.finance.sina.com.cn/corp/go.php/vMS_MarketHistory/stockid/600000.phtml?year=2013&jidu=1', console.log)
     getList(console.log)
-} else {
-    main()
+} else if ('sync' == mode) {
+    syncData()
 }
 
 function getList(cb) {
@@ -53,44 +54,46 @@ function getList(cb) {
 }
 
 
-function getOnePage(url) {
-    return function(cb) {
-        request(url, function(err, res, body) {
-            if (err) return cb(null)
-            var $ = cheerio.load(body)
-            var $tr = $('#FundHoldSharesTable tr')
-            if ($tr < 10) {
-                return cb(null)
-            }
-            var ret = []
-            $tr.each(function() {
-                var tds = $(this).find('td')
-                var date = tds.eq(0).text().trim()
-                var money = +(tds.eq(1).text())
-                if (money) {
-                    ret.push({
-                        date: date,
-                        money: money           
-                    })
-                }
-            })
-            cb(null, ret)
-        })
-    }
-}
-
-
-function main() {
-    getList(function(err, data) {
-        console.log(data.length)
-        var data = data.slice(1000, 1010)
-        var obj = {}
-        for (var i = 0, x; x = data[i++];) {
-            obj[x] = getOnePage('http://money.finance.sina.com.cn/corp/go.php/vMS_MarketHistory/stockid/' + x + '.phtml?year=2014&jidu=3')
+function getOnePage(url, cb) {
+    request(url, function(err, res, body) {
+        if (err) return cb(null)
+        var $ = cheerio.load(body)
+        var $tr = $('#FundHoldSharesTable tr')
+        if ($tr < 10) {
+            return cb(null)
         }
-        co(function* () {
-            var ret = yield obj
-            console.log(ret)
-        })()
+        var ret = []
+        $tr.each(function() {
+            var tds = $(this).find('td')
+            var date = tds.eq(0).text().trim()
+            var money = +(tds.eq(1).text())
+            if (money) {
+                ret.push({
+                    date: date,
+                    money: money           
+                })
+            }
+        })
+        cb(null, ret)
     })
 }
+
+
+function syncData() {
+    getList(function(err, data) {
+        console.log('股票总数: ', data.length)
+        var data = data.map(function(x) {
+            return 'http://money.finance.sina.com.cn/corp/go.php/vMS_MarketHistory/stockid/' + x + '.phtml?year=2014&jidu=3'
+        })
+        async.mapLimit(data, 20, getOnePage, function(err, ret) {
+            ret = ret.filter(function(x) {
+                return x
+            })
+            console.log('实际数据: ', ret.length)
+            fs.writeFileSync('./stock-data.json', JSON.stringify(ret))
+            console.log('数据同步成功')
+        })
+    })
+}
+
+// 模型1, (关键字: 低买), 找出n天内: (平均值 - 现在值) / 平均值, 最大的n个排名
