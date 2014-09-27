@@ -10,6 +10,7 @@ var fs = require('fs')
 // http://money.finance.sina.com.cn/corp/go.php/vMS_MarketHistory/stockid/600000.phtml?year=2013&jidu=1
 
 // 获取本季度与上季度数据
+var LIMIT = 200
 
 /*
 数据结构
@@ -50,6 +51,7 @@ function getList(cb) {
 
 
 function getOnePage(code, cb) {
+    console.log(code)
     var url = 'http://money.finance.sina.com.cn/corp/go.php/vMS_MarketHistory/stockid/' + code + '.phtml?year=2014&jidu=3'
     request(url, function(err, res, body) {
         if (err) return cb(null)
@@ -77,22 +79,66 @@ function getOnePage(code, cb) {
     })
 }
 
-
-function syncData() {
+function sync() {
     getList(function(err, data) {
         console.log('股票总数: ', data.length)
-        async.mapLimit(data, 20, getOnePage, function(err, ret) {
-            ret = ret.filter(function(x) {
-                return x
-            })
-            console.log('实际数据: ', ret.length)
-            fs.writeFileSync('./data.json', JSON.stringify(ret))
-            console.log('数据同步成功')
-        })
+        //data = data.slice(0, 10)
+        syncHistory(data)
+        //syncNow(data)
     })
 }
 
-model.lowbuy = function(data) {
+function syncHistory(list) {
+        async.mapLimit(list, LIMIT, getOnePage, function(err, ret) {
+            ret = ret.filter(function(x) {
+                return x
+            })
+            fs.writeFileSync('./history.json', JSON.stringify(ret, null, '\t'))
+            console.log('历史数据同步成功')
+        })
+}
+
+function syncNow(list, cb) {
+    async.mapLimit(list, LIMIT, getNow, function(err, ret) {
+        ret.filter(function(x) {
+            return x && x.now
+        })
+        fs.writeFileSync('./now.json', JSON.stringify(ret, null, '\t'))
+        console.log('今日数据同步成功')
+    })
+}
+
+
+function parseSina(str, code) {
+    var ret = str.match(/".*"/)
+    if (ret && ret[0]) {
+        ret = ret[0].split(',')
+        console.log(ret)
+        return {
+            name: ret[0],
+            now: ret[1],
+            code: code
+        }
+    }
+}
+
+function getNow(code, cb) {
+    // sina api http://hq.sinajs.cn/list=sz300315
+    
+    request('http://hq.sinajs.cn/list=sz' + code, function(err, res, body) {
+        if (err) return cb(null)
+        if (body.length < 40) {
+            request('http://hq.sinajs.cn/list=ss' + code, function(err, res, body) {
+                if (err) return cb(null)
+                cb(null, parseSina(body, code))
+            })
+        } else {
+            cb(null, parseSina(body, code))
+        }
+    })
+}
+
+model.lowbuy = function(data, cb) {
     // 模型: 低买, 找出n天内: (平均值 - 现在值) / 平均值, 最大的n个排名
     var days = process.argv[3] || 7
     var ret = data.map(function(one) {
@@ -120,21 +166,37 @@ model.lowbuy = function(data) {
     }).sort(function(a, b) {
         return b.rate - a.rate
     }).slice(0, 10)
+    cb = cb || console.log
+    cb(ret)
+}
+
+model.find = function(data) {
+    var codes = process.argv.slice(3).map(function(x) {
+        return +x
+    })
+    var ret = data.filter(function(one) {
+        return codes.indexOf(one.code) != -1
+    }).map(function(one) {
+        return {
+            code: one.code,
+            data: one.data.map(function(x) {
+                return x.money
+            }).reverse().join(', ')
+        }
+    })
     console.log(ret)
 }
 
 
-
-
 if ('test' == mode) {
-    getOnePage('http://money.finance.sina.com.cn/corp/go.php/vMS_MarketHistory/stockid/600000.phtml?year=2013&jidu=1', console.log)
-    getList(console.log)
+    getOnePage(600000, console.log)
+    //getList(console.log)
 } else if ('sync' == mode) {
-    syncData()
+    sync()
 } else if (model[mode]) {
     
     var data
-    fs.readFile('./data.json', function(err, ret) {
+    fs.readFile('./history.json', function(err, ret) {
         if (!err) {
             try {
                 data = JSON.parse(ret)
